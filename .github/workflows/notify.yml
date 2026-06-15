@@ -1,0 +1,46 @@
+# Diese Datei gehoert im Repo unter:  .github/workflows/notify.yml
+name: TimeTree -> Telegram
+
+on:
+  schedule:
+    - cron: "*/20 * * * *"   # alle ~20 Min (Zeit in UTC; GitHub kann's etwas verzoegern)
+  workflow_dispatch: {}        # erlaubt manuelles Starten per Knopf
+
+permissions:
+  contents: write              # noetig, um state.json zurueck ins Repo zu schreiben
+
+concurrency:
+  group: timetree-notify
+  cancel-in-progress: false    # zwei Laeufe sollen sich nicht ins Gehege kommen
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Run notifier
+        run: node notify.js
+        env:
+          TIMETREE_EMAIL: ${{ secrets.TIMETREE_EMAIL }}
+          TIMETREE_PASSWORD: ${{ secrets.TIMETREE_PASSWORD }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          CALENDAR_ID: ${{ secrets.CALENDAR_ID }}
+          AUTHOR_FILTER: ${{ secrets.AUTHOR_FILTER }}   # optional, darf leer sein
+
+      - name: Persist state
+        run: |
+          if [[ -n "$(git status --porcelain state.json)" ]]; then
+            git config user.name "timetree-bot"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add state.json
+            git commit -m "update state [skip ci]"
+            git push
+          else
+            echo "Kein Zustand geaendert."
+          fi
