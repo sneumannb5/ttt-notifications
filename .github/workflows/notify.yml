@@ -3,7 +3,7 @@ name: TimeTree -> Telegram
 
 on:
   schedule:
-    - cron: "*/20 * * * *"   # alle ~20 Min (Zeit in UTC; GitHub kann's etwas verzoegern)
+    - cron: "7,27,47 * * * *"  # alle 20 Min mit Offset (weniger GitHub-Cron-Stau als */20)
   workflow_dispatch: {}        # erlaubt manuelles Starten per Knopf
 
 permissions:
