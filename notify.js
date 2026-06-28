@@ -1,18 +1,18 @@
 /**
-* TimeTree -> Telegram + WhatsApp (Whapi) Notifier
-* ------------------------------------------------
-* Loggt sich mit einem Dummy-TimeTree-Account ein (der in Renés Kalender ist),
-* holt die Events und schickt neue/geaenderte Events raus -- an Telegram und/oder
-* an eine WhatsApp-Gruppe ueber Whapi.Cloud.
-*
-* - Telegram aktiv, wenn TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID gesetzt sind.
-* - WhatsApp aktiv, wenn WHAPI_TOKEN + WHAPI_TO gesetzt sind.
-*
-* Laeuft auf Node 18+ (nutzt globales fetch). Keine npm-Pakete noetig.
-*
-* WICHTIG: Das nutzt die INOFFIZIELLE TimeTree-Web-API. Die kann sich jederzeit
-* aendern. Wenn ploetzlich nichts mehr kommt, hier zuerst gucken.
-*/
+ * TimeTree -> Telegram + WhatsApp (Whapi) Notifier
+ * ------------------------------------------------
+ * Loggt sich mit einem Dummy-TimeTree-Account ein (der in Renés Kalender ist),
+ * holt die Events und schickt neue/geaenderte Events raus -- an Telegram und/oder
+ * an eine WhatsApp-Gruppe ueber Whapi.Cloud.
+ *
+ * - Telegram aktiv, wenn TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID gesetzt sind.
+ * - WhatsApp aktiv, wenn WHAPI_TOKEN + WHAPI_TO gesetzt sind.
+ *
+ * Laeuft auf Node 18+ (nutzt globales fetch). Keine npm-Pakete noetig.
+ *
+ * WICHTIG: Das nutzt die INOFFIZIELLE TimeTree-Web-API. Die kann sich jederzeit
+ * aendern. Wenn ploetzlich nichts mehr kommt, hier zuerst gucken.
+ */
 
 const fs = require("node:fs");
 const crypto = require("node:crypto");
@@ -181,6 +181,20 @@ lines.push("", eventLink(calendarId, ev));
 return lines.join("\n");
 }
 
+// WhatsApp-Format (nutzt *fett*, kein HTML)
+function buildMessageWhatsApp(calendarId, ev, isUpdate) {
+  const tag = isUpdate ? "✏️ Event aktualisiert" : "🆕 Neues Event";
+  const lines = [`*${tag}*`, "", `*${ev.title || "(ohne Titel)"}*`];
+  const when = fmtDate(ev.start_at, ev.all_day);
+  if (when) lines.push(`📅 ${when}`);
+  if (ev.location) lines.push(`📍 ${ev.location}`);
+  if (ev.note && ev.note.trim()) {
+    lines.push("", ev.note.trim());
+  }
+  lines.push("", eventLink(calendarId, ev));
+  return lines.join("\n");
+}
+
 async function sendTelegram(text) {
 const res = await fetch(`https://api.telegram.org/bot${TG_TOKEN}/sendMessage`, {
   method: "POST",
@@ -215,30 +229,47 @@ if (!res.ok) {
 }
 }
 
+// Sendet an eine WhatsApp-Gruppe (oder Kanal) ueber Whapi.Cloud.
+// WHAPI_TO ist die Ziel-ID: Gruppe "...@g.us" oder Kanal "...@newsletter".
+async function sendWhapi(text) {
+  const res = await fetch(`${WHAPI_BASE}/messages/text`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${WHAPI_TOKEN}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ to: WHAPI_TO, body: text }),
+  });
+  if (!res.ok) {
+    const t = await res.text();
+    throw new Error(`Whapi-Versand fehlgeschlagen: ${t}`);
+  }
+}
+
 // ----------------------------------------------------------------------------
 // Hauptablauf
 // ----------------------------------------------------------------------------
 
 async function main() {
-if (!EMAIL || !PASSWORD) throw new Error("TIMETREE_EMAIL / TIMETREE_PASSWORD fehlen");
-if (!telegramEnabled && !whatsappEnabled) {
-  throw new Error("Kein Kanal konfiguriert: setze Telegram- und/oder Whapi-Variablen.");
-}
-console.log(
-  `Aktive Kanaele: ${[telegramEnabled && "Telegram", whatsappEnabled && "WhatsApp"].filter(Boolean).join(", ")}`
-);
+  if (!EMAIL || !PASSWORD) throw new Error("TIMETREE_EMAIL / TIMETREE_PASSWORD fehlen");
+  if (!telegramEnabled && !whatsappEnabled) {
+    throw new Error("Kein Kanal konfiguriert: setze Telegram- und/oder Whapi-Variablen.");
+  }
+  console.log(
+    `Aktive Kanaele: ${[telegramEnabled && "Telegram", whatsappEnabled && "WhatsApp"].filter(Boolean).join(", ")}`
+  );
 
-const sessionId = await login(EMAIL, PASSWORD);
-console.log("Login ok.");
+  const sessionId = await login(EMAIL, PASSWORD);
+  console.log("Login ok.");
 
-// Kein Kalender gewaehlt? Dann nur auflisten und beenden (zum IDs finden).
-if (!CALENDAR_ID) {
-  const cals = await getCalendars(sessionId);
-  console.log("Verfuegbare Kalender (nutze die id als CALENDAR_ID):");
-  for (const c of cals) console.log(`  id=${c.id}  name=${c.name}`);
-  if (DEBUG_DUMP) console.log(JSON.stringify(cals, null, 2));
-  return;
-}
+  // Kein Kalender gewaehlt? Dann nur auflisten und beenden (zum IDs finden).
+  if (!CALENDAR_ID) {
+    const cals = await getCalendars(sessionId);
+    console.log("Verfuegbare Kalender (nutze die id als CALENDAR_ID):");
+    for (const c of cals) console.log(`  id=${c.id}  name=${c.name}`);
+    if (DEBUG_DUMP) console.log(JSON.stringify(cals, null, 2));
+    return;
+  }
 
 const events = await getEvents(sessionId, CALENDAR_ID);
 console.log(`Geladen: ${events.length} Events.`);
@@ -275,32 +306,32 @@ for (const ev of events) {
   const isNew = known === undefined;
   const isUpdate = !isNew && (ev.updated_at || 0) > known;
 
-  if (isNew || isUpdate) {
-    // Jeder Kanal einzeln: ein Fehler bricht den anderen nicht ab.
-    if (telegramEnabled) {
-      try {
-        await sendTelegram(buildMessage(CALENDAR_ID, ev, isUpdate));
-      } catch (e) {
-        console.error("Telegram fehlgeschlagen fuer", ev.uuid, e.message);
+    if (isNew || isUpdate) {
+      // Jeder Kanal einzeln: ein Fehler bricht den anderen nicht ab.
+      if (telegramEnabled) {
+        try {
+          await sendTelegram(buildMessage(CALENDAR_ID, ev, isUpdate));
+        } catch (e) {
+          console.error("Telegram fehlgeschlagen fuer", ev.uuid, e.message);
+        }
       }
-    }
-    if (whatsappEnabled) {
-      try {
-        await sendWhapi(buildMessageWhatsApp(CALENDAR_ID, ev, isUpdate));
-      } catch (e) {
-        console.error("WhatsApp fehlgeschlagen fuer", ev.uuid, e.message);
+      if (whatsappEnabled) {
+        try {
+          await sendWhapi(buildMessageWhatsApp(CALENDAR_ID, ev, isUpdate));
+        } catch (e) {
+          console.error("WhatsApp fehlgeschlagen fuer", ev.uuid, e.message);
+        }
       }
+      sent++;
     }
-    sent++;
+
+    // Best-effort: nach dem Versuch immer merken ->
+    // keine Endlos-Wiederholung und kein Doppel-Spam auf dem Kanal, der funktioniert hat.
+    state.events[ev.uuid] = ev.updated_at || 0;
   }
 
-  // Best-effort: nach dem Versuch immer merken -> keine Endlos-Wiederholung
-  // und kein Doppel-Spam auf dem Kanal, der funktioniert hat.
-  state.events[ev.uuid] = ev.updated_at || 0;
-}
-
-saveState(state);
-console.log(`Fertig. ${sent} Event(s) verarbeitet.`);
+  saveState(state);
+  console.log(`Fertig. ${sent} Event(s) verarbeitet.`);
 }
 
 main().catch((e) => {
