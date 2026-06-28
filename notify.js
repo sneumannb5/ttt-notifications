@@ -1,8 +1,12 @@
 /**
- * TimeTree -> Telegram Notifier
- * ------------------------------
+ * TimeTree -> Telegram + WhatsApp (Whapi) Notifier
+ * ------------------------------------------------
  * Loggt sich mit einem Dummy-TimeTree-Account ein (der in Renés Kalender ist),
- * holt die Events und schickt neue/geaenderte Events als Telegram-Nachricht raus.
+ * holt die Events und schickt neue/geaenderte Events raus -- an Telegram und/oder
+ * an eine WhatsApp-Gruppe ueber Whapi.Cloud.
+ *
+ * - Telegram aktiv, wenn TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID gesetzt sind.
+ * - WhatsApp aktiv, wenn WHAPI_TOKEN + WHAPI_TO gesetzt sind.
  *
  * Laeuft auf Node 18+ (nutzt globales fetch). Keine npm-Pakete noetig.
  *
@@ -23,8 +27,16 @@ const AUTHOR_FILTER = (process.env.AUTHOR_FILTER || "").trim(); // optional: nur
 const STATE_FILE = process.env.STATE_FILE || "state.json";
 const DEBUG_DUMP = process.env.DEBUG_DUMP === "1"; // 1 = rohe API-Daten ausgeben (zum Felder-Finden)
 
+// ---- WhatsApp via Whapi.Cloud (optional) ----
+const WHAPI_TOKEN = process.env.WHAPI_TOKEN;   // Channel-Token aus dem Whapi-Dashboard
+const WHAPI_TO = process.env.WHAPI_TO;         // Gruppen-ID, Form "...@g.us" (oder Kanal "...@newsletter")
+const WHAPI_BASE = process.env.WHAPI_BASE || "https://gate.whapi.cloud";
+
 const API_BASE = "https://timetreeapp.com/api/v1";
 const UA = "web/2.1.0/en"; // dieser Header ist Pflicht, sonst antwortet die API nicht
+
+const telegramEnabled = Boolean(TG_TOKEN && TG_CHAT);
+const whatsappEnabled = Boolean(WHAPI_TOKEN && WHAPI_TO);
 
 // ----------------------------------------------------------------------------
 // TimeTree
@@ -141,6 +153,7 @@ function authorOf(ev) {
   );
 }
 
+// Telegram-Format (HTML)
 function buildMessage(calendarId, ev, isUpdate) {
   const tag = isUpdate ? "✏️ Event aktualisiert" : "🆕 Neues Event";
   const lines = [`<b>${tag}</b>`, "", `<b>${esc(ev.title || "(ohne Titel)")}</b>`];
@@ -151,6 +164,20 @@ function buildMessage(calendarId, ev, isUpdate) {
     lines.push("", esc(ev.note.trim()));
   }
   lines.push("", `🔗 ${eventLink(calendarId, ev)}`);
+  return lines.join("\n");
+}
+
+// WhatsApp-Format (nutzt *fett*, kein HTML)
+function buildMessageWhatsApp(calendarId, ev, isUpdate) {
+  const tag = isUpdate ? "✏️ Event aktualisiert" : "🆕 Neues Event";
+  const lines = [`*${tag}*`, "", `*${ev.title || "(ohne Titel)"}*`];
+  const when = fmtDate(ev.start_at, ev.all_day);
+  if (when) lines.push(`📅 ${when}`);
+  if (ev.location) lines.push(`📍 ${ev.location}`);
+  if (ev.note && ev.note.trim()) {
+    lines.push("", ev.note.trim());
+  }
+  lines.push("", eventLink(calendarId, ev));
   return lines.join("\n");
 }
 
@@ -171,12 +198,35 @@ async function sendTelegram(text) {
   }
 }
 
+// Sendet an eine WhatsApp-Gruppe (oder Kanal) ueber Whapi.Cloud.
+// WHAPI_TO ist die Ziel-ID: Gruppe "...@g.us" oder Kanal "...@newsletter".
+async function sendWhapi(text) {
+  const res = await fetch(`${WHAPI_BASE}/messages/text`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${WHAPI_TOKEN}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ to: WHAPI_TO, body: text }),
+  });
+  if (!res.ok) {
+    const t = await res.text();
+    throw new Error(`Whapi-Versand fehlgeschlagen: ${t}`);
+  }
+}
+
 // ----------------------------------------------------------------------------
 // Hauptablauf
 // ----------------------------------------------------------------------------
 
 async function main() {
   if (!EMAIL || !PASSWORD) throw new Error("TIMETREE_EMAIL / TIMETREE_PASSWORD fehlen");
+  if (!telegramEnabled && !whatsappEnabled) {
+    throw new Error("Kein Kanal konfiguriert: setze Telegram- und/oder Whapi-Variablen.");
+  }
+  console.log(
+    `Aktive Kanaele: ${[telegramEnabled && "Telegram", whatsappEnabled && "WhatsApp"].filter(Boolean).join(", ")}`
+  );
 
   const sessionId = await login(EMAIL, PASSWORD);
   console.log("Login ok.");
@@ -226,19 +276,31 @@ async function main() {
     const isUpdate = !isNew && (ev.updated_at || 0) > known;
 
     if (isNew || isUpdate) {
-      try {
-        await sendTelegram(buildMessage(CALENDAR_ID, ev, isUpdate));
-        sent++;
-      } catch (e) {
-        console.error("Senden fehlgeschlagen fuer", ev.uuid, e.message);
-        continue; // Stand NICHT updaten, dann wird es naechstes Mal erneut versucht
+      // Jeder Kanal einzeln: ein Fehler bricht den anderen nicht ab.
+      if (telegramEnabled) {
+        try {
+          await sendTelegram(buildMessage(CALENDAR_ID, ev, isUpdate));
+        } catch (e) {
+          console.error("Telegram fehlgeschlagen fuer", ev.uuid, e.message);
+        }
       }
+      if (whatsappEnabled) {
+        try {
+          await sendWhapi(buildMessageWhatsApp(CALENDAR_ID, ev, isUpdate));
+        } catch (e) {
+          console.error("WhatsApp fehlgeschlagen fuer", ev.uuid, e.message);
+        }
+      }
+      sent++;
     }
+
+    // Best-effort: nach dem Versuch immer merken ->
+    // keine Endlos-Wiederholung und kein Doppel-Spam auf dem Kanal, der funktioniert hat.
     state.events[ev.uuid] = ev.updated_at || 0;
   }
 
   saveState(state);
-  console.log(`Fertig. ${sent} Nachricht(en) verschickt.`);
+  console.log(`Fertig. ${sent} Event(s) verarbeitet.`);
 }
 
 main().catch((e) => {
