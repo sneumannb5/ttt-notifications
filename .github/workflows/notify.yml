@@ -1,5 +1,5 @@
 # Diese Datei gehoert im Repo unter:  .github/workflows/notify.yml
-name: TimeTree -> Telegram
+name: TimeTree -> Telegram & Whatsapp
 
 on:
   # schedule:
@@ -32,6 +32,8 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           CALENDAR_ID: ${{ secrets.CALENDAR_ID }}
           AUTHOR_FILTER: ${{ secrets.AUTHOR_FILTER }}   # optional, darf leer sein
+          WHAPI_TOKEN: ${{ secrets.WHAPI_TOKEN }}
+          WHAPI_TO: ${{ secrets.WHAPI_TO }}
 
       - name: Persist state
         run: |
