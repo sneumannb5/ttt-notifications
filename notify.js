@@ -163,7 +163,6 @@ function buildMessage(calendarId, ev, isUpdate) {
   if (ev.note && ev.note.trim()) {
     lines.push("", esc(ev.note.trim()));
   }
-  lines.push("", `🔗 ${eventLink(calendarId, ev)}`);
   return lines.join("\n");
 }
 
@@ -177,7 +176,6 @@ function buildMessageWhatsApp(calendarId, ev, isUpdate) {
   if (ev.note && ev.note.trim()) {
     lines.push("", ev.note.trim());
   }
-  lines.push("", eventLink(calendarId, ev));
   return lines.join("\n");
 }
 
